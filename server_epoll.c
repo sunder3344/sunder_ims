@@ -14,6 +14,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <stdio.h>
+#include <time.h>
 #include <gdbm.h>
 #include "cJSON.h"
 
@@ -27,6 +28,7 @@
 #define PTHREAD_NUM 10
 #define DB_NAME "sunder_db"
 #define LOGIN_MSG "##sunder##ims##"
+#define OFFLINE "offline"
 
 struct Threadparam {
 	int epfd_param;
@@ -191,47 +193,54 @@ void *loop(struct Threadparam *threadp) {
 					printf("del ip result: %d\n", del_res);
 					events[i].data.fd = -1;
 				}
-				//printf("thread:%ld  %d -- > %s\n", pthread_self(), sock_fd, buf);
 				//将sock_fd保存
 				if (strcmp(LOGIN_MSG, buf) == 0) {
 					char *sockstr = (char *)malloc(sizeof(char *) * 10);
 					sprintf(sockstr, "%d", sock_fd);
 					insert(inet_ntoa(clientaddr.sin_addr), sockstr, 1);
 					free(sockstr);
-				} else {
-					if (strlen(buf) > 0) {			//结束的时候buf可能会读入NULL
-						//解析发送的聊天json
-						struct RecvInfo *rinfo = (struct RecvInfo *)malloc(sizeof (struct RecvInfo));
-						parseRecvInfo(rinfo, buf);
-						//printf("%s, %s, %s\n", rinfo->destip, rinfo->nickname, rinfo->content);
-						//发送消息给需要联系的客户端
-						char *sockstr = (char *)malloc(sizeof(char *) * 10);
-						//查找对端是否上线了
-						sockstr = find(rinfo->destip);
-						//printf("find sockfd = %d\n", atoi(sockstr));
-						if (sockstr == NULL) {			//如果不存在，通知原客户端
-							send(sock_fd, "not exist", 9, 0);		//直接转发
-						} else {		//如果存在，直接转发
-							//printf("find sockfd = %d\n", atoi(sockstr));
-							//拼接内容json
-							char *json_str = getParamString(rinfo->nickname, rinfo->content);
-							printf("server: from %s to %s, content = %s\n", inet_ntoa(clientaddr.sin_addr), rinfo->destip, json_str);
-							send(atoi(sockstr), json_str, MAXLINE, 0);		//直接转发
-						}
-						free(rinfo);
-					}
 				}
+				//printf("thread:%ld  %d -- > %s\n", pthread_self(), sock_fd, buf);
 				threadp->ev_param.data.fd = sock_fd;
 				threadp->ev_param.events = EPOLLOUT;
 				epoll_ctl(threadp->epfd_param, EPOLL_CTL_MOD, sock_fd, &(threadp->ev_param));	//改动监听事件为可读
 			} else if (events[i].events & EPOLLOUT) {	//可写事件
 				sock_fd = events[i].data.fd;
-				//printf("thread:%ld   OUT   buf:=%s\n", pthread_self(), buf);
-				if (buf != NULL) {
+				printf("thread:%ld   OUT   buf:=%s  len = %d   isNull = %d\n", pthread_self(), buf, strlen(buf), buf == NULL);
+				/*if (buf != NULL) {
 					if (strcmp(LOGIN_MSG, buf) != 0) {
-						//send(sock_fd, buf, MAXLINE, 0);				//如果开启，会发回给连接的客户端
+						send(sock_fd, buf, MAXLINE, 0);				//如果开启，会发回给连接的客户端
 					}
+				}*/
+				
+				if (strlen(buf) > 0 && strcmp(LOGIN_MSG, buf) != 0) {			//结束的时候buf可能会读入NULL
+					printf("********buf*********: %s\n", buf);
+					//解析发送的聊天json
+					struct RecvInfo *rinfo = (struct RecvInfo *)malloc(sizeof (struct RecvInfo));
+					parseRecvInfo(rinfo, buf);
+					//printf("%s, %s, %s\n", rinfo->destip, rinfo->nickname, rinfo->content);
+					//发送消息给需要联系的客户端
+					char *sockstr = (char *)malloc(sizeof(char *) * 10);
+					//查找对端是否上线了
+					sockstr = find(rinfo->destip);
+					if (sockstr == NULL) {			//如果不存在，通知原客户端
+						char *json_str2 = getParamString(rinfo->nickname, OFFLINE);
+						send(sock_fd, json_str2, strlen(json_str2), 0);		//直接转发
+					} else {		//如果存在，直接转发
+						//printf("find sockfd = %d\n", atoi(sockstr));
+						//拼接内容json
+						char *json_str = getParamString(rinfo->nickname, rinfo->content);
+						time_t now = time(NULL);
+						char tmp[64];
+						strftime(tmp, sizeof(tmp), "%Y-%m-%d %H:%M:%S", localtime(&now));
+						printf("[%s] server: from %s to %s, content = %s\n", tmp, inet_ntoa(clientaddr.sin_addr), rinfo->destip, json_str);
+						send(atoi(sockstr), json_str, strlen(json_str), 0);		//直接转发
+					}
+					free(sockstr);
+					free(rinfo);
 				}
+				memset(&buf, 0, sizeof(buf));
+
 				threadp->ev_param.data.fd = sock_fd;
 				threadp->ev_param.events = EPOLLIN;
 				epoll_ctl(threadp->epfd_param, EPOLL_CTL_MOD, sock_fd, &(threadp->ev_param));
