@@ -11,3 +11,4 @@ an IMS module in Linux(based on epoll), it's combined with server module and cli
     * ./clientA 192.168.0.1 sunder
     * ./clientB 192.168.0.2 derek
 * now clientA can chat with clientB through the server
+* thanks for the project [cJSON](http://valgrind.org)
