@@ -1,8 +1,8 @@
-##Sunder ims
+#Sunder ims
 an IMS module in Linux(based on epoll)£¬ it's combined with server module and client module
 (such as Wechat, QQ etc)
 
-##how to use it
+#how to use it
 
 * compile the C code:
     *  gcc -o server_epoll server_epoll.c cJSON.c -lpthread -lgdbm
