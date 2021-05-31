@@ -1,6 +1,5 @@
 #Sunder ims
-an IMS module in Linux(based on epoll)£¬ it's combined with server module and client module
-(such as Wechat, QQ etc)
+an IMS module in Linux(based on epoll)£¬ it's combined with server module and client module(such as Wechat, QQ etc)
 
 #how to use it
 
