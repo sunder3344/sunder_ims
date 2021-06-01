@@ -146,7 +146,7 @@ int del(char *keyStr) {
 	GDBM_FILE db;
 	int result;
 	db = gdbm_open(DB_NAME, 0, GDBM_WRITER, 0666, 0);
-	datum key;
+	datum key = {keyStr, strlen(keyStr) + 1};
 	key.dsize = strlen(keyStr) + 1;
 	result = gdbm_delete(db, key);
 	gdbm_close(db);
