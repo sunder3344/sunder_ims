@@ -84,7 +84,7 @@ void readThread(struct MsgInfo *info) {
 				printf("server reset\n");
 				break;
 			} else {
-				printf(strerror(errno));
+				printf("%s\n", strerror(errno));
 				printf("readline error\n");
 			}
 			sleep(1);
