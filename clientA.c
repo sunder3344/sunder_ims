@@ -6,6 +6,7 @@
 #include <netdb.h>
 #include <errno.h>
 #include <stdlib.h>
+#include <pthread.h>
 #include <string.h>
 #include <unistd.h>
 #include <time.h>
@@ -44,6 +45,7 @@ int parseRecvInfo(struct RecvInfo *rinfo, char *jsonstr) {
 	} else {
 		return -1;
 	}
+	return 1;
 }
 
 /**
@@ -72,14 +74,17 @@ char *getParamString(char *ip, char *nickname, char *content) {
 /**
  * 接受消息线程
  */
-void readThread(int sockfd) {
+void readThread(struct MsgInfo *info) {
 	char buf[4096];
 	int n;
 	while (1) {
-		if ((n = recv(sockfd, buf, MAXLINE, 0)) < 0) {
+		if ((n = recv(info->sockfd_param, buf, MAXLINE, 0)) < 0) {
 			if (errno == ECONNRESET) {
-				close(sockfd);	
+				//close(sockfd);
+				printf("server reset\n");
+				break;
 			} else {
+				printf(strerror(errno));
 				printf("readline error\n");
 			}
 			sleep(1);
@@ -104,12 +109,27 @@ void writeThread(struct MsgInfo *info) {
 	char buf[4096];
 	while (1) {
 		//printf("%s: ", info->nickname);
-		scanf("%s", buf);
+		/*scanf("%s", buf);
 		char *json_str = getParamString(info->destip, info->nickname, buf);
 		//printf("send json: %s\n", json_str);
 		send(info->sockfd_param, json_str, strlen(json_str), 0);
 		//printf("received: %s\n", buf);
-		//printf("numbytes: %d\n", numbytes);
+		//printf("numbytes: %d\n", numbytes);*/
+		if (fgets(buf, sizeof(buf), stdin) != NULL) {	
+			size_t len = strlen(buf);
+			if (len > 0 && buf[len - 1] == '\n') {
+				buf[len - 1] = '\0';
+			}
+
+			if (strlen(buf) == 0) {
+				continue;
+			}
+
+			char *json_str = getParamString(info->destip, info->nickname, buf);
+			send(info->sockfd_param, json_str, strlen(json_str), 0);
+			
+			free(json_str); 
+		}
 	}
 }
 
@@ -130,14 +150,16 @@ int main(int argc, char * argv[]) {
 	printf("Hi %s, welcome to this chat room\n", argv[2]);
 	
 	their_addr.sin_family = AF_INET;
-	their_addr.sin_port = htons(8888);
-	their_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+	their_addr.sin_port = htons(8080);
+	their_addr.sin_addr.s_addr = inet_addr("121.5.90.115");
 	bzero(&(their_addr.sin_zero), 8);
 
 	while(connect(sockfd, (struct sockaddr *)&their_addr, sizeof(struct sockaddr)) == -1);
 	printf("Get the Server peer!\n");
 	//发送一个消息标识一下
-	send(sockfd, LOGIN_MSG, strlen(LOGIN_MSG), 0);
+	char login_json[256];
+	sprintf(login_json, "{\"type\":\"login\",\"nickname\":\"%s\"}", argv[2]);
+	send(sockfd, login_json, strlen(login_json), 0);
 
 	struct MsgInfo *msgInfo = (struct MsgInfo *)malloc(sizeof(struct MsgInfo));
 	//装入MsgInfo
@@ -145,8 +167,8 @@ int main(int argc, char * argv[]) {
 	msgInfo->destip = argv[1];
 	msgInfo->sockfd_param = sockfd;
 
-	pthread_create(&rid, NULL, readThread, sockfd);
-	pthread_create(&wid, NULL, writeThread, msgInfo);
+	pthread_create(&rid, NULL, (void *)readThread, msgInfo);
+	pthread_create(&wid, NULL, (void *)writeThread, msgInfo);
 	pthread_join(rid, NULL);
 	pthread_join(wid, NULL);
 	free(msgInfo);

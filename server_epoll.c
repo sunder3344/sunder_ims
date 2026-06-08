@@ -16,13 +16,14 @@
 #include <stdio.h>
 #include <time.h>
 #include <gdbm.h>
+#include <pthread.h>
 #include "cJSON.h"
 
 #define MAXLINE 4096
 #define OPEN_MAX 100
 #define LISTENQ 2048
 #define SOCKET_NUM 4096
-#define SERV_PORT 8888
+#define SERV_PORT 8080
 #define INFTIM 1000
 #define IP_ADDR "127.0.0.1"
 #define PTHREAD_NUM 10
@@ -49,32 +50,79 @@ struct SendInfo {
 	char *content;
 };
 
+struct LoginInfo {
+	char *type;
+	char *nickname;
+};
+
 /**
  * 解析接收到的信息
  */
 int parseRecvInfo(struct RecvInfo *rinfo, char *jsonstr) {
+	if (jsonstr == NULL || strlen(jsonstr) == 0) return -1;
+
 	cJSON *parse = cJSON_Parse(jsonstr);
+	if (parse == NULL) {
+			return -1;			//解析失败直接返回
+	}
+
 	const cJSON *destip = NULL;
 	const cJSON *nickname = NULL;
 	const cJSON *content = NULL;
 	destip = cJSON_GetObjectItemCaseSensitive(parse, "dest_ip");
 	nickname = cJSON_GetObjectItemCaseSensitive(parse, "nickname");
 	content = cJSON_GetObjectItemCaseSensitive(parse, "content");
+
+	int ret = 0;
 	if (cJSON_IsString(destip) && (destip->valuestring != NULL)) {
-		rinfo->destip = destip->valuestring;
+		rinfo->destip = strdup(destip->valuestring);
 	} else {
-		return -1;
+		ret = -1;
 	}
 	if (cJSON_IsString(nickname) && (nickname->valuestring != NULL)) {
-		rinfo->nickname = nickname->valuestring;
+		rinfo->nickname = strdup(nickname->valuestring);
 	} else {
-		return -1;
+		ret = -1;
 	}
 	if (cJSON_IsString(content) && (content->valuestring != NULL)) {
-		rinfo->content = content->valuestring;
+		rinfo->content = strdup(content->valuestring);
 	} else {
-		return -1;
+		ret = -1;
 	}
+
+	cJSON_Delete(parse); //释放cJSON对象的内存
+	return ret;
+}
+
+/**
+ * 解析登陆信息
+ */
+int parseLoginInfo(struct LoginInfo *loginInfo, char *jsonstr) {
+	if (jsonstr == NULL || strlen(jsonstr) == 0) return -1;
+		cJSON *parse = cJSON_Parse(jsonstr);
+		if (parse == NULL) {
+				return -1;			//解析失败直接返回
+		}
+
+		const cJSON *type = NULL;
+		const cJSON *nickname = NULL;
+		type = cJSON_GetObjectItemCaseSensitive(parse, "type");
+		nickname = cJSON_GetObjectItemCaseSensitive(parse, "nickname");
+
+		int ret = 0;
+		if (cJSON_IsString(type) && (type->valuestring != NULL)) {
+			loginInfo->type = strdup(type->valuestring);
+		} else {
+			ret = -1;
+		}
+		if (cJSON_IsString(nickname) && (nickname->valuestring != NULL)) {
+			loginInfo->nickname = strdup(nickname->valuestring);
+		} else {
+			ret = -1;
+		}
+
+		cJSON_Delete(parse); //释放cJSON对象的内存
+		return ret;
 }
 
 /**
@@ -102,17 +150,23 @@ char *getParamString(char *nickname, char *content) {
 /**
  * 插入gdbm，返回值：0：成功；1：有重复值；-1：插入失败(type值：1：插入；2：替换)
  */
-int insert(char *keyStr, char *valueStr, int type) {
+int insert(char *keyStr, int sockfd, int type) {
 	int result;
 	GDBM_FILE db;
 	datum key = {keyStr, strlen(keyStr) + 1};
-	datum value = {valueStr, strlen(valueStr) + 1};
-	if (type == 1) {
-		db = gdbm_open(DB_NAME, 0, GDBM_WRCREAT, 0666, 0);
-	} else {
-		db = gdbm_open(DB_NAME, 0, GDBM_REPLACE, 0666, 0);
+	datum value = {(char *)&sockfd, sizeof(int)};
+
+	db = gdbm_open(DB_NAME, 0, GDBM_WRCREAT, 0666, 0);
+	if (db == NULL) {
+		printf("Error: 无法打开或创建数据库文件%s, errno: %d\n", DB_NAME, gdbm_errno);
+		return -1;
 	}
-	result = gdbm_store(db, key, value, GDBM_INSERT);
+
+	if (type == 1) {
+		result = gdbm_store(db, key, value, GDBM_INSERT);
+	} else {
+		result = gdbm_store(db, key, value, GDBM_REPLACE);
+	}
 	gdbm_close(db);
 	return result;
 }
@@ -120,33 +174,45 @@ int insert(char *keyStr, char *valueStr, int type) {
 /**
  * 查询gdbm
  */
-char *find(char *keyStr) {
+int find(char *keyStr) {
+	if (keyStr == NULL || strlen(keyStr) == 0) return -1;
+
 	GDBM_FILE db;
-	char *val = (char *)malloc(sizeof(char *) * 200);
+	int fd = -1;
+
 	db = gdbm_open(DB_NAME, 0, GDBM_READER, 0666, 0);
 	if (db == NULL) {
-		return NULL;
+		return -1;
 	}
 	datum key = {keyStr, strlen(keyStr) + 1};
-	key.dsize = strlen(keyStr) + 1;
 	datum value = gdbm_fetch(db, key);
 	if (value.dptr != NULL) {
-		val = value.dptr;
-	} else {
-		val = NULL;
+		if (value.dsize == sizeof(int)) {
+			fd = *(int *)value.dptr;
+		}
+		free(value.dptr);
 	}
+
 	gdbm_close(db);
-	return val;
+	return fd;
 }
 
 /**
  * 删除记录，返回值：0：成功；-1：失败
  */
 int del(char *keyStr) {
+	if (keyStr == NULL || strlen(keyStr) == 0) return -1;
+
 	GDBM_FILE db;
-	int result;
-	db = gdbm_open(DB_NAME, 0, GDBM_WRITER, 0666, 0);
-	datum key = {keyStr, strlen(keyStr) + 1};
+	int result = -1;
+
+	db = gdbm_open(DB_NAME, 0, GDBM_WRCREAT, 0666, 0);
+	if (db == NULL) {
+		printf("[Error] del操作无法打开数据库 %s\n", DB_NAME);
+		return -1;
+	}
+
+	datum key = {keyStr, (int)strlen(keyStr) + 1};
 	key.dsize = strlen(keyStr) + 1;
 	result = gdbm_delete(db, key);
 	gdbm_close(db);
@@ -194,12 +260,22 @@ void *loop(struct Threadparam *threadp) {
 					events[i].data.fd = -1;
 				}
 				//将sock_fd保存
-				if (strcmp(LOGIN_MSG, buf) == 0) {
-					char *sockstr = (char *)malloc(sizeof(char *) * 10);
-					sprintf(sockstr, "%d", sock_fd);
-					insert(inet_ntoa(clientaddr.sin_addr), sockstr, 1);
-					free(sockstr);
+				//先解析发过来的登陆数据
+				struct LoginInfo *loginInfo = (struct LoginInfo *)malloc(sizeof (struct LoginInfo));
+				memset(loginInfo, 0, sizeof(loginInfo));
+				parseLoginInfo(loginInfo, buf);
+				if (loginInfo->type != NULL && strcmp("login", loginInfo->type) == 0) {
+					char *name = loginInfo->nickname; // 比如 "derek"
+					int res = insert(name, sock_fd, 2);
+					if (res == 0) {
+						printf("[Log] 用户%s登录成功，绑定fd: %d\n", name, sock_fd);
+					} else {
+						printf("[Error] 用户%s登录失败，数据库写入错误码: %d\n", name, res);
+					}
 				}
+				if (loginInfo->type) free(loginInfo->type);
+				if (loginInfo->nickname) free(loginInfo->nickname);
+				free(loginInfo);
 				//printf("thread:%ld  %d -- > %s\n", pthread_self(), sock_fd, buf);
 				threadp->ev_param.data.fd = sock_fd;
 				threadp->ev_param.events = EPOLLOUT;
@@ -207,25 +283,25 @@ void *loop(struct Threadparam *threadp) {
 			} else if (events[i].events & EPOLLOUT) {	//可写事件
 				sock_fd = events[i].data.fd;
 				printf("thread:%ld   OUT   buf:=%s  len = %d   isNull = %d\n", pthread_self(), buf, strlen(buf), buf == NULL);
-				/*if (buf != NULL) {
-					if (strcmp(LOGIN_MSG, buf) != 0) {
-						send(sock_fd, buf, MAXLINE, 0);				//如果开启，会发回给连接的客户端
-					}
-				}*/
-				
-				if (strlen(buf) > 0 && strcmp(LOGIN_MSG, buf) != 0) {			//结束的时候buf可能会读入NULL
+				struct LoginInfo *loginInfo = (struct LoginInfo *)malloc(sizeof (struct LoginInfo));
+				memset(loginInfo, 0, sizeof(loginInfo));
+				parseLoginInfo(loginInfo, buf);
+
+				if (strlen(buf) > 0 && loginInfo->type == NULL) {			//结束的时候buf可能会读入NULL
 					printf("********buf*********: %s\n", buf);
 					//解析发送的聊天json
 					struct RecvInfo *rinfo = (struct RecvInfo *)malloc(sizeof (struct RecvInfo));
 					parseRecvInfo(rinfo, buf);
 					//printf("%s, %s, %s\n", rinfo->destip, rinfo->nickname, rinfo->content);
 					//发送消息给需要联系的客户端
-					char *sockstr = (char *)malloc(sizeof(char *) * 10);
+					//char *sockstr = (char *)malloc(sizeof(char *) * 10);
 					//查找对端是否上线了
-					sockstr = find(rinfo->destip);
-					if (sockstr == NULL) {			//如果不存在，通知原客户端
+					int sockstr = find(rinfo->destip);
+					if (sockstr == -1) {			//如果不存在，通知原客户端
+						printf("rinfo->destip=%s, nickname=%s, content=%s\n", rinfo->destip, rinfo->nickname, rinfo->content);
 						char *json_str2 = getParamString(rinfo->nickname, OFFLINE);
 						send(sock_fd, json_str2, strlen(json_str2), 0);		//直接转发
+						free(json_str2); 		//释放 getParamString 的内存
 					} else {		//如果存在，直接转发
 						//printf("find sockfd = %d\n", atoi(sockstr));
 						//拼接内容json
@@ -234,11 +310,14 @@ void *loop(struct Threadparam *threadp) {
 						char tmp[64];
 						strftime(tmp, sizeof(tmp), "%Y-%m-%d %H:%M:%S", localtime(&now));
 						printf("[%s] server: from %s to %s, content = %s\n", tmp, inet_ntoa(clientaddr.sin_addr), rinfo->destip, json_str);
-						send(atoi(sockstr), json_str, strlen(json_str), 0);		//直接转发
+						send(sockstr, json_str, strlen(json_str), 0);		//直接转发
+						free(json_str);
 					}
-					free(sockstr);
 					free(rinfo);
 				}
+				if (loginInfo->type) free(loginInfo->type);
+				if (loginInfo->nickname) free(loginInfo->nickname);
+				free(loginInfo);
 				memset(&buf, 0, sizeof(buf));
 
 				threadp->ev_param.data.fd = sock_fd;
@@ -256,10 +335,13 @@ int main(int argc, char * argv[]) {
 	int listenfd;		//监听fd
 	int maxi;
 	int i;
-	pthread_t tid;
 
 	epfd = epoll_create(256);		//生成epoll句柄
 	listenfd = socket(AF_INET, SOCK_STREAM, 0);	//创建套接字
+	int on = 1;
+	if (setsockopt(listenfd, SOL_SOCKET, SO_REUSEPORT, &on, sizeof(on)) < 0) {
+		perror("setsockopt error!");
+	}
 	ev.data.fd = listenfd;		//设置与要处理事件相关的文件描写叙述符
 	//ev.events = EPOLLIN|EPOLLET;		//设置要处理的事件类型(打开ET模式，可选;当设置ET时，需要用fcntl将socket设置为非阻塞模式)
 	ev.events = EPOLLIN;
@@ -278,11 +360,7 @@ int main(int argc, char * argv[]) {
 	threadp->epfd_param = epfd;
 	threadp->listenfd_param = listenfd;
 	threadp->ev_param = ev;
-	for (i = 0; i < PTHREAD_NUM; i++) {
-		pthread_create(&tid, NULL, (void *)loop, threadp);
-	}
-
-	pthread_join(tid, NULL);
+	loop(threadp);
 	while (1) {
 		pause();
 	}
