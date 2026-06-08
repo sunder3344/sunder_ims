@@ -219,6 +219,57 @@ int del(char *keyStr) {
 	return result;
 }
 
+/**
+ * 根据 fd 反向查找用户昵称并将其彻底删除
+ * 返回值：0：成功删除了用户；-1：没找到对应用户或操作失败
+ */
+int del_by_fd(int target_fd) {
+    GDBM_FILE db;
+    datum key, nextkey, value;
+    char *found_name = NULL;
+
+    // 以可读写模式打开
+    db = gdbm_open(DB_NAME, 0, GDBM_WRCREAT, 0666, 0);
+    if (db == NULL) return -1;
+
+    // 开始遍历 GDBM
+    key = gdbm_firstkey(db);
+    while (key.dptr != NULL) {
+        value = gdbm_fetch(db, key);
+        if (value.dptr != NULL) {
+            if (value.dsize == sizeof(int)) {
+                int current_fd = *(int *)value.dptr;
+                if (current_fd == target_fd) {
+                    // 找到了匹配的 fd，把 Key 拷贝出来
+                    found_name = strdup(key.dptr);
+                    free(value.dptr);
+                    break;
+                }
+            }
+            free(value.dptr);
+        }
+        nextkey = gdbm_nextkey(db, key);
+        free(key.dptr);
+        key = nextkey;
+    }
+
+    // 如果中途 break 出来的，需要清理最后一次留在手里的 key
+    if (key.dptr != NULL) {
+        free(key.dptr);
+    }
+
+    int result = -1;
+    if (found_name != NULL) {
+        // 执行删除
+        datum del_key = {found_name, (int)strlen(found_name) + 1};
+        result = gdbm_delete(db, del_key);
+        free(found_name);
+    }
+
+    gdbm_close(db);
+    return result;
+}
+
 void *loop(struct Threadparam *threadp) {
 	struct epoll_event events[SOCKET_NUM];
 	char buf[MAXLINE];
@@ -255,7 +306,8 @@ void *loop(struct Threadparam *threadp) {
 				} else if (n == 0) {
 					close(sock_fd);
 					printf("关闭\n");
-					int del_res = del(inet_ntoa(clientaddr.sin_addr));
+					//int del_res = del(inet_ntoa(clientaddr.sin_addr));
+					int del_res = del_by_fd(sock_fd);
 					printf("del ip result: %d\n", del_res);
 					events[i].data.fd = -1;
 				}
